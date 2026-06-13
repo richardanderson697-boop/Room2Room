@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { RotateCcw, AlertCircle, HelpCircle, ArrowRightLeft, Palette, Sparkles } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface UnoCard {
   color: "red" | "blue" | "green" | "yellow" | "wild";
@@ -123,13 +124,7 @@ export default function Uno({
   }, [gameState, opponentId]);
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   const handleCardPlay = (cardIdx: number) => {

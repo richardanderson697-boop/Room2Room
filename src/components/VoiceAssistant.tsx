@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Mic, MicOff, Volume2, VolumeX, HelpCircle, Activity } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface VoiceAssistantProps {
   onNavTrigger: (activity: "lobby" | "bingo" | "checkers" | "solitaire" | "uno" | "yahtzee") => void;
@@ -109,13 +110,7 @@ export default function VoiceAssistant({
   };
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.8; // Senior-friendly pacing
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   const parseSpeechCommand = (text: string) => {

@@ -14,6 +14,8 @@ interface PlayerSession {
   bed: string;
   avatar: string;
   lastSeen: number;
+  isStaff?: boolean;
+  staffName?: string;
 }
 
 interface ChatMessage {
@@ -45,6 +47,28 @@ interface GameSession {
   state: any; // Game-specific board or game info
   lastUpdate: number;
 }
+
+let facilityPin: string | null = null; // Stored in-memory, first PIN entry sets it
+
+interface Announcement {
+  id: string;
+  text: string;
+  senderId: string;
+  senderLabel: string;
+  senderAvatar: string;
+  target: string; // "all", "wing-1", "wing-2", "wing-3", or room number
+  timestamp: number;
+}
+
+interface AnnouncementReport {
+  id: string;
+  announcementId: string;
+  reportedBy: string;
+  timestamp: number;
+}
+
+let announcements: Announcement[] = [];
+let announcementReports: AnnouncementReport[] = [];
 
 let activePlayers: { [id: string]: PlayerSession } = {};
 let messages: ChatMessage[] = [];
@@ -86,9 +110,21 @@ setInterval(() => {
 
 // API ENDPOINTS
 
+// 0. PIN Setup status check
+app.get("/api/pin-status", (req, res) => {
+  res.json({ facilityPinSet: !!facilityPin });
+});
+
+// Reset PIN
+app.post("/api/pin-reset", (req, res) => {
+  facilityPin = null;
+  console.log("Facility PIN reset to null by client.");
+  res.json({ success: true, facilityPinSet: false });
+});
+
 // 1. Join / Register
 app.post("/api/register", (req, res) => {
-  const { room, bed, avatar } = req.body;
+  const { room, bed, avatar, pin, staffName } = req.body;
   if (!room || !bed || !avatar) {
     res.status(400).json({ error: "Room, Bed and Avatar are required" });
     return;
@@ -98,15 +134,44 @@ app.post("/api/register", (req, res) => {
   const cleanBed = String(bed).trim().toUpperCase().substring(0, 5);
   const id = `${cleanRoom}-${cleanBed}`;
 
+  const STAFF_AVATARS = ["👩‍⚕️", "🧑‍⚕️", "💼", "🥪"];
+  const isStaffAvatar = STAFF_AVATARS.includes(avatar);
+
+  let isStaff = false;
+  if (isStaffAvatar) {
+    if (!pin) {
+      res.status(400).json({ error: "Facility PIN is required for staff registration." });
+      return;
+    }
+    const cleanPin = String(pin).trim();
+    if (cleanPin.length < 4 || cleanPin.length > 6) {
+      res.status(400).json({ error: "Facility PIN must be between 4 and 6 digits." });
+      return;
+    }
+
+    if (!facilityPin) {
+      facilityPin = cleanPin;
+      isStaff = true;
+      console.log(`Facility PIN initialized by ${staffName || id} to: ${facilityPin}`);
+    } else if (facilityPin === cleanPin) {
+      isStaff = true;
+    } else {
+      res.status(401).json({ error: "Incorrect Facility PIN! Please enter the correct PIN or choose a resident character." });
+      return;
+    }
+  }
+
   activePlayers[id] = {
     id,
     room: cleanRoom,
     bed: cleanBed,
     avatar,
     lastSeen: Date.now(),
+    isStaff,
+    staffName: staffName ? String(staffName).trim() : undefined,
   };
 
-  console.log(`Senior joined: ${id} as ${avatar}`);
+  console.log(`Senior joined: ${id} as ${avatar} (isStaff: ${isStaff})`);
   res.json({ success: true, player: activePlayers[id] });
 });
 
@@ -132,7 +197,9 @@ app.post("/api/heartbeat", (req, res) => {
     .filter((player) => player.id !== playerId)
     .map((player) => ({
       id: player.id,
-      label: `Room ${player.room} - Bed ${player.bed}`,
+      label: player.isStaff 
+        ? (player.staffName || `Staff ${player.avatar}`)
+        : `Room ${player.room} - Bed ${player.bed}`,
       avatar: player.avatar,
     }));
 
@@ -154,12 +221,39 @@ app.post("/api/heartbeat", (req, res) => {
     g.players.includes(playerId)
   );
 
+  // Match announcement targets: "all", wing specific ("wing-1", "wing-2", "wing-3"), or direct room number
+  const matchTarget = (target: string, playerRoom: string) => {
+    if (target === "all") return true;
+    if (target === "wing-1" && playerRoom.startsWith("1")) return true;
+    if (target === "wing-2" && playerRoom.startsWith("2")) return true;
+    if (target === "wing-3" && playerRoom.startsWith("3")) return true;
+    if (target === playerRoom) return true;
+    return false;
+  };
+
+  const playerAnnouncements = announcements.filter((a) => matchTarget(a.target, p.room));
+
+  // Generate audit logs and reports list only if the player is authenticated as Staff
+  let staffLogs: any[] = [];
+  let reportsList: any[] = [];
+  if (p.isStaff) {
+    staffLogs = announcements.map((a) => ({
+      ...a,
+      reportsCount: announcementReports.filter((r) => r.announcementId === a.id).length,
+    }));
+    reportsList = announcementReports;
+  }
+
   res.json({
     success: true,
     players: playersList,
     messages: playerMsgs,
     invites: playerInvites,
     activeGames,
+    announcements: playerAnnouncements,
+    staffLogs,
+    reportsList,
+    facilityPinSet: !!facilityPin,
   });
 });
 
@@ -177,10 +271,14 @@ app.post("/api/message", (req, res) => {
     return;
   }
 
+  const senderLabel = sender.isStaff 
+    ? (sender.staffName || `Staff ${sender.avatar}`) 
+    : `Room ${sender.room} (Bed ${sender.bed})`;
+
   const newMessage: ChatMessage = {
     id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
     senderId,
-    senderLabel: `Room ${sender.room} (Bed ${sender.bed})`,
+    senderLabel,
     senderAvatar: sender.avatar,
     receiverId,
     text: String(text).substring(0, 500),
@@ -196,6 +294,78 @@ app.post("/api/message", (req, res) => {
   }
 
   res.json({ success: true, message: newMessage });
+});
+
+// 3.5. Send Staff Announcement (Rate-limited, verified Staff only)
+app.post("/api/announcement/send", (req, res) => {
+  const { senderId, text, target } = req.body;
+  if (!senderId || !text) {
+    res.status(400).json({ error: "Missing senderId or text copy" });
+    return;
+  }
+
+  const sender = activePlayers[senderId];
+  if (!sender) {
+    res.status(404).json({ error: "Staff session not found on server" });
+    return;
+  }
+
+  if (!sender.isStaff) {
+    res.status(403).json({ error: "Access denied. Only registered facility staff can broadcast announcements." });
+    return;
+  }
+
+  const now = Date.now();
+  // Rate limit check: wait at least 5 seconds between consecutive broadcasts from this sender
+  const lastStaffAnnounce = announcements.filter((a) => a.senderId === senderId);
+  if (lastStaffAnnounce.length > 0) {
+    const lastTimestamp = lastStaffAnnounce[lastStaffAnnounce.length - 1].timestamp;
+    if (now - lastTimestamp < 5000) {
+      res.status(429).json({ error: "Rate limit exceeded. Please wait 5 seconds before sending another announcement." });
+      return;
+    }
+  }
+
+  const senderLabel = sender.staffName ? sender.staffName : `Staff ${sender.avatar}`;
+  const newAnnouncement: Announcement = {
+    id: `ann-${now}-${Math.random().toString(36).substr(2, 5)}`,
+    text: String(text).trim().substring(0, 1000),
+    senderId,
+    senderLabel,
+    senderAvatar: sender.avatar,
+    target: target || "all",
+    timestamp: now,
+  };
+
+  announcements.push(newAnnouncement);
+  console.log(`[Staff Announcement Broadcast] ${senderLabel} to target "${target || "all"}": ${newAnnouncement.text}`);
+
+  // Keep list tidy
+  if (announcements.length > 100) {
+    announcements = announcements.slice(-100);
+  }
+
+  res.json({ success: true, announcement: newAnnouncement });
+});
+
+// 3.6. Report Staff Announcement
+app.post("/api/announcement/report", (req, res) => {
+  const { announcementId, reportedBy } = req.body;
+  if (!announcementId) {
+    res.status(400).json({ error: "Missing announcementId" });
+    return;
+  }
+
+  const report: AnnouncementReport = {
+    id: `rep-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    announcementId,
+    reportedBy: reportedBy || "Resident",
+    timestamp: Date.now(),
+  };
+
+  announcementReports.push(report);
+  console.log(`[Announcement Reported] ${announcementId} was marked by ${reportedBy}`);
+  res.json({ success: true });
 });
 
 // 4. Send Game Invite

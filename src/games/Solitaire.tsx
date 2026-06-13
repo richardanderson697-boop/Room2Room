@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { RotateCcw, HelpCircle, ArrowLeftRight, Sparkles, Smile } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface SolitaireProps {
   playerId: string;
@@ -102,13 +103,7 @@ export default function Solitaire({
   }, []);
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   // Convert numbers to label characters

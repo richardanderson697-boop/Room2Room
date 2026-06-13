@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { RotateCcw, AlertCircle, HelpCircle, Dices, Sparkles } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface YahtzeeProps {
   playerId: string;
@@ -100,13 +101,7 @@ export default function Yahtzee({
   }, [gameState, opponentId]);
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   const rollDice = () => {

@@ -1,17 +1,41 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AVATAR_SPECS, PRESET_MESSAGES } from "../types";
 import { UserCheck, Sparkles, LogIn, ArrowRight } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface LobbyProps {
-  onRegister: (room: string, bed: string, avatar: string) => void;
+  onRegister: (room: string, bed: string, avatar: string, pin?: string, staffName?: string) => void;
   textScale: "normal" | "large" | "extra-large";
 }
+
+const STAFF_AVATAR_SPECS = [
+  { char: "👩‍⚕️", name: "Staff Nurse", color: "bg-teal-100 text-teal-800" },
+  { char: "🧑‍⚕️", name: "Caregiver", color: "bg-blue-100 text-blue-800" },
+  { char: "💼", name: "Administrator", color: "bg-stone-100 text-stone-800" },
+  { char: "🥪", name: "Activity Coordinator", color: "bg-orange-100 text-orange-850" },
+];
 
 export default function Lobby({ onRegister, textScale }: LobbyProps) {
   const [room, setRoom] = useState<string>("");
   const [bed, setBed] = useState<string>("A");
   const [selectedAvatar, setSelectedAvatar] = useState<string>("👴");
   const [errorLabel, setErrorLabel] = useState<string>("");
+
+  const [pin, setPin] = useState<string>("");
+  const [staffName, setStaffName] = useState<string>("");
+  const [isStaffChosen, setIsStaffChosen] = useState<boolean>(false);
+  const [facilityPinSet, setFacilityPinSet] = useState<boolean>(false);
+
+  useEffect(() => {
+    fetch("/api/pin-status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && typeof data.facilityPinSet === "boolean") {
+          setFacilityPinSet(data.facilityPinSet);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleKeypadPress = (num: string) => {
     if (room.length >= 4) return;
@@ -31,13 +55,21 @@ export default function Lobby({ onRegister, textScale }: LobbyProps) {
   };
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
+    speakPhrase(phrase, true);
+  };
+
+  const handleResetPin = async () => {
     try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+      const res = await fetch("/api/pin-reset", { method: "POST" });
+      const data = await res.json();
+      if (data && data.success) {
+        setFacilityPinSet(false);
+        setPin("");
+        speak("Facility PIN has been successfully reset. You can now define a new code!");
+      }
+    } catch {
+      speak("Failed to reset pin.");
+    }
   };
 
   const handleSubmit = () => {
@@ -47,8 +79,9 @@ export default function Lobby({ onRegister, textScale }: LobbyProps) {
       return;
     }
     setErrorLabel("");
+
     // Register player
-    onRegister(room, bed, selectedAvatar);
+    onRegister(room, bed, selectedAvatar, isStaffChosen ? pin : undefined, isStaffChosen ? staffName : undefined);
     speak(`Joining Room ${room} Bed ${bed}. Welcome to Room to Room Connect!`);
   };
 
@@ -163,28 +196,129 @@ export default function Lobby({ onRegister, textScale }: LobbyProps) {
             <label className="block text-lg font-black text-slate-800 uppercase mb-2">
               Step 3: Choose Character Avatar
             </label>
-            <div className="grid grid-cols-4 gap-2 border-4 border-slate-900 bg-white p-3 rounded-2xl max-h-56 overflow-y-auto">
-              {AVATAR_SPECS.map((spec) => (
-                <button
-                  key={spec.char}
-                  id={`lobby-avatar-choice-${spec.char}`}
-                  onClick={() => {
-                    setSelectedAvatar(spec.char);
-                    speak(spec.name);
-                  }}
-                  className={`relative p-2 rounded-xl flex flex-col items-center justify-center cursor-pointer transition border-3 ${
-                    selectedAvatar === spec.char
-                      ? "bg-amber-100 border-amber-500 scale-102 ring-2 ring-amber-300"
-                      : "bg-slate-50 border-transparent hover:bg-slate-150"
-                  }`}
-                >
-                  <span className="text-4xl filter drop-shadow-md">{spec.char}</span>
-                  <span className="text-[10px] font-bold text-slate-800 mt-1 uppercase text-center max-w-full truncate">
-                    {spec.name.split(" ")[1] || spec.name}
-                  </span>
-                </button>
-              ))}
+            <div className="border-4 border-slate-900 bg-white p-3 rounded-2xl max-h-80 overflow-y-auto flex flex-col gap-4">
+              
+              <div>
+                <span className="text-xs font-black text-slate-500 uppercase tracking-widest block mb-2">Resident Characters:</span>
+                <div className="grid grid-cols-4 gap-2">
+                  {AVATAR_SPECS.map((spec) => (
+                    <button
+                      key={spec.char}
+                      id={`lobby-avatar-choice-${spec.char}`}
+                      onClick={() => {
+                        setSelectedAvatar(spec.char);
+                        setIsStaffChosen(false);
+                        if (room === "Staff") {
+                          setRoom("");
+                          setBed("A");
+                        }
+                        speak(spec.name);
+                      }}
+                      className={`relative p-2 rounded-xl flex flex-col items-center justify-center cursor-pointer transition border-3 ${
+                        selectedAvatar === spec.char && !isStaffChosen
+                          ? "bg-amber-100 border-amber-500 scale-102 ring-2 ring-amber-300"
+                          : "bg-slate-50 border-transparent hover:bg-slate-150"
+                      }`}
+                    >
+                      <span className="text-4xl filter drop-shadow-md">{spec.char}</span>
+                      <span className="text-[10px] font-bold text-slate-800 mt-1 uppercase text-center max-w-full truncate">
+                        {spec.name.split(" ")[1] || spec.name}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t-2 border-slate-200 pt-3">
+                <span className="text-xs font-black text-emerald-700 uppercase tracking-widest block mb-2">🏥 Facility Staff:</span>
+                <div className="grid grid-cols-4 gap-2">
+                  {STAFF_AVATAR_SPECS.map((spec) => (
+                    <button
+                      key={spec.char}
+                      id={`lobby-avatar-choice-${spec.char}`}
+                      onClick={() => {
+                        setSelectedAvatar(spec.char);
+                        setIsStaffChosen(true);
+                        if (!room || room === "") {
+                          setRoom("Staff");
+                          setBed("Desk");
+                        }
+                        speak(spec.name);
+                      }}
+                      className={`relative p-2 rounded-xl flex flex-col items-center justify-center cursor-pointer transition border-3 ${
+                        selectedAvatar === spec.char && isStaffChosen
+                          ? "bg-teal-100 border-teal-500 scale-102 ring-2 ring-teal-350"
+                          : "bg-slate-50 border-transparent hover:bg-slate-150"
+                      }`}
+                    >
+                      <span className="text-4xl filter drop-shadow-md">{spec.char}</span>
+                      <span className="text-[10px] font-bold text-slate-800 mt-1 uppercase text-center max-w-full truncate">
+                        {spec.name.split(" ")[1] || spec.name}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
             </div>
+
+            {isStaffChosen && (
+              <div className="mt-4 p-4 border-4 border-slate-900 bg-teal-50 rounded-2xl flex flex-col gap-3">
+                <span className="text-xs font-black text-teal-850 uppercase tracking-wider block">
+                  📋 Staff Portal Details:
+                </span>
+                
+                <div>
+                  <label className="block text-xs font-black text-slate-700 uppercase mb-1">
+                    Staff Member Name (optional, e.g., Nurse Sarah)
+                  </label>
+                  <input
+                    type="text"
+                    value={staffName}
+                    onChange={(e) => setStaffName(e.target.value)}
+                    placeholder="Nurse Sarah"
+                    maxLength={30}
+                    className="w-full text-base border-3 border-slate-900 rounded-xl px-3 py-2 bg-white text-slate-900 font-bold focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-black text-slate-700 uppercase mb-1">
+                    Facility Staff PIN (required for Staff Mode)
+                  </label>
+                  <input
+                    type="password"
+                    pattern="[0-9]*"
+                    inputMode="numeric"
+                    placeholder="4 to 6 digit code"
+                    maxLength={6}
+                    value={pin}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, "");
+                      setPin(val);
+                    }}
+                    className="w-full text-center text-3xl font-black tracking-widest border-3 border-slate-900 rounded-xl py-2 bg-white text-slate-950 focus:outline-none"
+                  />
+                  <div className="flex items-center justify-between mt-2.5 flex-wrap gap-2">
+                    <span className="text-[10px] font-bold text-teal-900 block leading-normal max-w-[70%]">
+                      {facilityPinSet 
+                        ? "🔑 Enter the facility-wide code to gain priority broadcast privilege."
+                        : "⚠️ First correct PIN sets the facility-wide code! Enter 4-6 digits."}
+                    </span>
+                    {facilityPinSet && (
+                      <button
+                        type="button"
+                        onClick={handleResetPin}
+                        className="text-[10px] font-black text-red-700 hover:text-red-900 bg-red-50 hover:bg-red-100 border-2 border-red-200 hover:border-red-400 rounded-lg px-2 py-1 uppercase tracking-tight transition cursor-pointer"
+                        title="Click to erase current PIN and start fresh"
+                      >
+                        Reset PIN 🔄
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -8,6 +8,26 @@ export interface Player {
   room: string;
   bed: string;
   avatar: string;
+  isStaff?: boolean;
+  staffName?: string;
+}
+
+export interface Announcement {
+  id: string;
+  text: string;
+  senderId: string;
+  senderLabel: string;
+  senderAvatar: string;
+  target: string;
+  timestamp: number;
+  reportsCount?: number;
+}
+
+export interface AnnouncementReport {
+  id: string;
+  announcementId: string;
+  reportedBy: string;
+  timestamp: number;
 }
 
 export interface OnlineUser {

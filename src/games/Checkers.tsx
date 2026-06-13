@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { RotateCcw, AlertTriangle, Crown, Sparkles } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface CheckersProps {
   playerId: string;
@@ -138,13 +139,7 @@ export default function Checkers({
   };
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   const handleCellClick = (r: number, c: number) => {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Play, RotateCcw, Volume2, Maximize2, Minimize2, Sparkles, AlertCircle } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface BingoProps {
   playerId: string;
@@ -147,15 +148,7 @@ export default function Bingo({
 
   // Announce sound
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window) || !ttsRef.current) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.8; // Seniors like standard slower speech
-      window.speechSynthesis.speak(utterance);
-    } catch (e) {
-      console.warn("Speech Synthesis error:", e);
-    }
+    speakPhrase(phrase, ttsRef.current);
   };
 
   // Caller Loop for Solo

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { OnlineUser, ChatMessage, GameInvite, PRESET_MESSAGES } from "../types";
 import { Send, Volume2, Sparkles, AlertCircle, Gamepad2, ChevronRight, X, Play, MessageSquare, Mic } from "lucide-react";
+import { speakPhrase } from "../speech";
 
 interface MessagingProps {
   myId: string;
@@ -91,13 +92,7 @@ export default function Messaging({
   };
 
   const speak = (phrase: string) => {
-    if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.rate = 0.82; // seniors like slow clear voice
-      window.speechSynthesis.speak(utterance);
-    } catch {}
+    speakPhrase(phrase, true);
   };
 
   const sizeClass = 
