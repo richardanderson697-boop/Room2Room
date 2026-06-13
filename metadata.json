@@ -1,0 +1,6 @@
+{
+  "name": "Room 2 Room Connect",
+  "description": "A high-contrast, fully voice-activated multiplayer communication and game suite for seniors in nursing care facilities, letting rooms connect anonymously and play games together.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

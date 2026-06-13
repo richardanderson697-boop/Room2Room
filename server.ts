@@ -1,0 +1,471 @@
+import express from "express";
+import path from "path";
+import { createServer as createViteServer } from "vite";
+
+const app = express();
+app.use(express.json());
+
+const PORT = 3000;
+
+// IN-MEMORY DATABASE (Zero PII, stores only room, bed, avatar and active state)
+interface PlayerSession {
+  id: string; // room-bed, e.g., "102-B"
+  room: string;
+  bed: string;
+  avatar: string;
+  lastSeen: number;
+}
+
+interface ChatMessage {
+  id: string;
+  senderId: string; // "102-B"
+  senderLabel: string; // "Room 102 Bed B"
+  senderAvatar: string;
+  receiverId: string; // "103-A" or "all"
+  text: string;
+  timestamp: number;
+}
+
+interface GameInvite {
+  id: string;
+  senderId: string;
+  senderLabel: string;
+  senderAvatar: string;
+  receiverId: string;
+  gameType: "bingo" | "checkers" | "solitaire" | "uno" | "yahtzee";
+  status: "pending" | "accepted" | "declined";
+  gameId: string;
+}
+
+interface GameSession {
+  id: string;
+  gameType: string;
+  players: string[]; // IDs
+  playerDetails: { [id: string]: { label: string; avatar: string } };
+  state: any; // Game-specific board or game info
+  lastUpdate: number;
+}
+
+let activePlayers: { [id: string]: PlayerSession } = {};
+let messages: ChatMessage[] = [];
+let invites: GameInvite[] = [];
+let games: { [id: string]: GameSession } = {};
+
+// Clean up expired sessions (inactive for over 15 seconds)
+setInterval(() => {
+  const now = Date.now();
+  const timeout = 15000;
+
+  for (const id in activePlayers) {
+    if (now - activePlayers[id].lastSeen > timeout) {
+      console.log(`Player disconnected due to inactivity: ${id}`);
+      delete activePlayers[id];
+
+      // Cancel pending invites from or to this player
+      invites = invites.filter(
+        (inv) => inv.senderId !== id && inv.receiverId !== id
+      );
+
+      // Clean up games this player was in
+      for (const gameId in games) {
+        if (games[gameId].players.includes(id)) {
+          // If in progress, we can end it or notify the opponent
+          games[gameId].players = games[gameId].players.filter((p) => p !== id);
+          if (games[gameId].players.length === 0) {
+            delete games[gameId];
+          } else {
+            games[gameId].state.ended = true;
+            games[gameId].state.statusMessage = "Opponent disconnected";
+            games[gameId].lastUpdate = now;
+          }
+        }
+      }
+    }
+  }
+}, 5000);
+
+// API ENDPOINTS
+
+// 1. Join / Register
+app.post("/api/register", (req, res) => {
+  const { room, bed, avatar } = req.body;
+  if (!room || !bed || !avatar) {
+    res.status(400).json({ error: "Room, Bed and Avatar are required" });
+    return;
+  }
+
+  const cleanRoom = String(room).trim().substring(0, 10);
+  const cleanBed = String(bed).trim().toUpperCase().substring(0, 5);
+  const id = `${cleanRoom}-${cleanBed}`;
+
+  activePlayers[id] = {
+    id,
+    room: cleanRoom,
+    bed: cleanBed,
+    avatar,
+    lastSeen: Date.now(),
+  };
+
+  console.log(`Senior joined: ${id} as ${avatar}`);
+  res.json({ success: true, player: activePlayers[id] });
+});
+
+// 2. Heartbeat (keeps user active, retrieves system state updates)
+app.post("/api/heartbeat", (req, res) => {
+  const { playerId } = req.body;
+  if (!playerId) {
+    res.status(400).json({ error: "playerId is required" });
+    return;
+  }
+
+  const p = activePlayers[playerId];
+  if (p) {
+    p.lastSeen = Date.now();
+  } else {
+    // If player vanished, let client know they should re-register
+    res.json({ error: "Session expired", registerRequired: true });
+    return;
+  }
+
+  // Get active online friends (excluding self)
+  const playersList = Object.values(activePlayers)
+    .filter((player) => player.id !== playerId)
+    .map((player) => ({
+      id: player.id,
+      label: `Room ${player.room} - Bed ${player.bed}`,
+      avatar: player.avatar,
+    }));
+
+  // Fetch relevant messages (either to "all" or specific to this room, or from this room)
+  const playerMsgs = messages.filter(
+    (m) =>
+      m.receiverId === "all" ||
+      m.receiverId === playerId ||
+      m.senderId === playerId
+  ).slice(-30); // limit to last 30 for performance
+
+  // Fetch active game invites
+  const playerInvites = invites.filter(
+    (inv) => inv.senderId === playerId || inv.receiverId === playerId
+  );
+
+  // Fetch any active games this player is currently in
+  const activeGames = Object.values(games).filter((g) =>
+    g.players.includes(playerId)
+  );
+
+  res.json({
+    success: true,
+    players: playersList,
+    messages: playerMsgs,
+    invites: playerInvites,
+    activeGames,
+  });
+});
+
+// 3. Send Message
+app.post("/api/message", (req, res) => {
+  const { senderId, receiverId, text } = req.body;
+  if (!senderId || !receiverId || !text) {
+    res.status(400).json({ error: "Missing sender, receiver, or text" });
+    return;
+  }
+
+  const sender = activePlayers[senderId];
+  if (!sender) {
+    res.status(404).json({ error: "Sender session not found" });
+    return;
+  }
+
+  const newMessage: ChatMessage = {
+    id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    senderId,
+    senderLabel: `Room ${sender.room} (Bed ${sender.bed})`,
+    senderAvatar: sender.avatar,
+    receiverId,
+    text: String(text).substring(0, 500),
+    timestamp: Date.now(),
+  };
+
+  messages.push(newMessage);
+  console.log(`Message from ${newMessage.senderLabel}: ${newMessage.text}`);
+
+  // Keep messages array trimmed
+  if (messages.length > 200) {
+    messages = messages.slice(-200);
+  }
+
+  res.json({ success: true, message: newMessage });
+});
+
+// 4. Send Game Invite
+app.post("/api/invite", (req, res) => {
+  const { senderId, receiverId, gameType } = req.body;
+  if (!senderId || !receiverId || !gameType) {
+    res.status(400).json({ error: "Missing sender, receiver, or gameType" });
+    return;
+  }
+
+  const sender = activePlayers[senderId];
+  if (!sender) {
+    res.status(404).json({ error: "Sender not online" });
+    return;
+  }
+
+  // Remove existing pending invites between these two players to avoid duplicates
+  invites = invites.filter(
+    (inv) =>
+      !(
+        (inv.senderId === senderId && inv.receiverId === receiverId) ||
+        (inv.senderId === receiverId && inv.receiverId === senderId)
+      )
+  );
+
+  const newInvite: GameInvite = {
+    id: `invite-${Date.now()}`,
+    senderId,
+    senderLabel: `Room ${sender.room} (Bed ${sender.bed})`,
+    senderAvatar: sender.avatar,
+    receiverId,
+    gameType,
+    status: "pending",
+    gameId: `game-${Date.now()}`,
+  };
+
+  invites.push(newInvite);
+  console.log(`Invite from ${newInvite.senderLabel} to play ${gameType}`);
+  res.json({ success: true, invite: newInvite });
+});
+
+// 5. Respond to Game Invite
+app.post("/api/invite/respond", (req, res) => {
+  const { inviteId, status } = req.body;
+  if (!inviteId || !status) {
+    res.status(400).json({ error: "Missing inviteId or status" });
+    return;
+  }
+
+  const invite = invites.find((inv) => inv.id === inviteId);
+  if (!invite) {
+    res.status(404).json({ error: "Invite not found" });
+    return;
+  }
+
+  invite.status = status;
+
+  if (status === "accepted") {
+    const p1 = activePlayers[invite.senderId];
+    const p2 = activePlayers[invite.receiverId];
+
+    if (!p1 || !p2) {
+      invite.status = "declined";
+      res.status(400).json({ error: "One of the players went offline." });
+      return;
+    }
+
+    // Initialize game session state
+    let initialGameState: any = {
+      turn: invite.senderId,
+      statusMessage: "Game started! Red plays first.",
+      ended: false,
+    };
+
+    // Game Specific Defaults
+    if (invite.gameType === "bingo") {
+      initialGameState = {
+        calledNumbers: [],
+        started: true,
+        callerActive: true, // Auto caller active
+        winner: null,
+      };
+    } else if (invite.gameType === "checkers") {
+      // 8x8 checkers board representation
+      // r = red, b = black, R = red king, B = black king, e = empty
+      const initialBoard = [
+        ["e", "b", "e", "b", "e", "b", "e", "b"],
+        ["b", "e", "b", "e", "b", "e", "b", "e"],
+        ["e", "b", "e", "b", "e", "b", "e", "b"],
+        ["e", "e", "e", "e", "e", "e", "e", "e"],
+        ["e", "e", "e", "e", "e", "e", "e", "e"],
+        ["r", "e", "r", "e", "r", "e", "r", "e"],
+        ["e", "r", "e", "r", "e", "r", "e", "r"],
+        ["r", "e", "r", "e", "r", "e", "r", "e"],
+      ];
+      initialGameState = {
+        board: initialBoard,
+        turn: invite.senderId, // Player 1 is Red
+        colorMap: {
+          [invite.senderId]: "red",
+          [invite.receiverId]: "black",
+        },
+        ended: false,
+        winner: null,
+      };
+    } else if (invite.gameType === "uno") {
+      initialGameState = {
+        deckCount: 40,
+        discardPile: [{ color: "red", value: "5" }],
+        playerHands: {
+          [invite.senderId]: [
+            { color: "red", value: "3" },
+            { color: "blue", value: "Skip" },
+            { color: "yellow", value: "7" },
+            { color: "green", value: "Draw 2" },
+            { color: "wild", value: "Wild" },
+          ],
+          [invite.receiverId]: [
+            { color: "green", value: "2" },
+            { color: "red", value: "8" },
+            { color: "blue", value: "Reverse" },
+            { color: "yellow", value: "4" },
+            { color: "wild", value: "Wild" },
+          ],
+        },
+        turn: invite.senderId,
+        ended: false,
+        winner: null,
+      };
+    } else if (invite.gameType === "yahtzee") {
+      initialGameState = {
+        dice: [1, 1, 1, 1, 1],
+        held: [false, false, false, false, false],
+        rollCount: 0,
+        scores: {
+          [invite.senderId]: {},
+          [invite.receiverId]: {},
+        },
+        turn: invite.senderId,
+        ended: false,
+        winner: null,
+      };
+    }
+
+    games[invite.gameId] = {
+      id: invite.gameId,
+      gameType: invite.gameType,
+      players: [invite.senderId, invite.receiverId],
+      playerDetails: {
+        [invite.senderId]: {
+          label: `Room ${p1.room} (Bed ${p1.bed})`,
+          avatar: p1.avatar,
+        },
+        [invite.receiverId]: {
+          label: `Room ${p2.room} (Bed ${p2.bed})`,
+          avatar: p2.avatar,
+        },
+      },
+      state: initialGameState,
+      lastUpdate: Date.now(),
+    };
+
+    console.log(`Game created! ${invite.gameType} (${invite.gameId})`);
+  }
+
+  // Remove the invite once responded
+  invites = invites.filter((inv) => inv.id !== inviteId);
+
+  res.json({ success: true, gameId: invite.gameId });
+});
+
+// 6. Push Game Move/Action
+app.post("/api/game/action", (req, res) => {
+  const { gameId, playerId, state } = req.body;
+  if (!gameId || !playerId || !state) {
+    res.status(400).json({ error: "Missing gameId, playerId, or state" });
+    return;
+  }
+
+  const game = games[gameId];
+  if (!game) {
+    res.status(404).json({ error: "Game session not found" });
+    return;
+  }
+
+  // Verify player is in game
+  if (!game.players.includes(playerId)) {
+    res.status(403).json({ error: "Unauthorized game player" });
+    return;
+  }
+
+  // Update State
+  if (game.gameType === "bingo") {
+    // If the game already has a winner and the incoming state resets the game (winner is null)
+    const isReset = state.winner === null;
+
+    if (isReset) {
+      // Allow complete reset of the game state
+      game.state = state;
+    } else {
+      // Merge calledNumbers arrays to include union of all called numbers so far
+      const currentCalled = Array.isArray(game.state?.calledNumbers) ? game.state.calledNumbers : [];
+      const incomingCalled = Array.isArray(state?.calledNumbers) ? state.calledNumbers : [];
+      
+      // Union called numbers
+      const mergedCalled = Array.from(new Set([...currentCalled, ...incomingCalled])).sort((a, b) => a - b);
+      state.calledNumbers = mergedCalled;
+
+      // Handle winner / ended protection
+      if (game.state?.winner) {
+        state.winner = game.state.winner;
+        state.winnerName = game.state.winnerName;
+        state.statusMessage = game.state.statusMessage;
+        state.ended = true;
+      }
+      game.state = state;
+    }
+  } else {
+    game.state = state;
+  }
+  
+  game.lastUpdate = Date.now();
+
+  res.json({ success: true, state: game.state });
+});
+
+// 7. Leave Game
+app.post("/api/game/leave", (req, res) => {
+  const { gameId, playerId } = req.body;
+  if (!gameId || !playerId) {
+    res.status(400).json({ error: "Missing gameId or playerId" });
+    return;
+  }
+
+  const game = games[gameId];
+  if (game) {
+    console.log(`Player ${playerId} is leaving game ${gameId}`);
+    game.players = game.players.filter((p) => p !== playerId);
+    if (game.players.length === 0) {
+      delete games[gameId];
+    } else {
+      game.state.ended = true;
+      game.state.statusMessage = "Opponent left the game.";
+      game.lastUpdate = Date.now();
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// VITE MIDDLEWARE SETUP
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    // Serve static files from modern Vite build output folder `dist`
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
