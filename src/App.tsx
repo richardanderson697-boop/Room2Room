@@ -31,6 +31,9 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [invites, setInvites] = useState<GameInvite[]>([]);
   const [activeGameSession, setActiveGameSession] = useState<GameSession | null>(null);
+  const [joinableGames, setJoinableGames] = useState<any[]>([]);
+  const [invitedJoinProgressGame, setInvitedJoinProgressGame] = useState<any | null>(null);
+  const [hasPromptedJoinProgress, setHasPromptedJoinProgress] = useState<boolean>(false);
 
   // Connection Indicator
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -127,6 +130,8 @@ export default function App() {
 
     if (res.player) {
       setPlayer(res.player);
+      setHasPromptedJoinProgress(false);
+      setInvitedJoinProgressGame(null);
       setActiveScreen("messaging");
 
       if (res.player.isStaff) {
@@ -245,6 +250,22 @@ export default function App() {
         setFacilityPinSet(res.facilityPinSet);
       }
 
+      // Reconcile Joinable Games
+      if (res.joinableGames) {
+        setJoinableGames(res.joinableGames);
+
+        // Ask someone registering or logging in if they want to join a Bingo/Uno/Yahtzee game already in progress Y/N
+        if (!hasPromptedJoinProgress && res.joinableGames.length > 0) {
+          const matchToJoin = res.joinableGames.find(
+            (g: any) => g.gameType === "bingo" || g.gameType === "uno" || g.gameType === "yahtzee"
+          );
+          if (matchToJoin) {
+            setInvitedJoinProgressGame(matchToJoin);
+            setHasPromptedJoinProgress(true); // only prompt once
+          }
+        }
+      }
+
       // Reconcile Multiplayer Game Sessions
       if (res.activeGames && res.activeGames.length > 0) {
         const myGame = res.activeGames[0] as GameSession;
@@ -339,6 +360,25 @@ export default function App() {
   const handleSelectGameSolo = (gameType: "bingo" | "checkers" | "solitaire" | "uno" | "yahtzee") => {
     setActiveGameSession(null); // Clear mp session for solo
     setActiveScreen(gameType);
+  };
+
+  const handleHostGameMultiplayer = async (gameType: "bingo" | "checkers" | "uno" | "yahtzee") => {
+    if (!player) return;
+    const res = await apiCall("/api/game/create", { playerId: player.id, gameType });
+    if (res && res.success) {
+      speak(`Creating a multiplayer ${gameType} lobby. Preparing game room!`);
+      setActiveScreen(gameType as any);
+    }
+  };
+
+  const handleJoinGameMultiplayer = async (gameId: string) => {
+    if (!player) return;
+    const res = await apiCall("/api/game/join", { gameId, playerId: player.id });
+    if (res && res.success) {
+      speak("Connected successfully! Joining the group match.");
+    } else if (res && res.error) {
+      speak(`Could not join: ${res.error}`);
+    }
   };
 
   const readLastIncomingMessageOutLoud = () => {
@@ -573,20 +613,22 @@ export default function App() {
         ) : (
           <>
             {activeScreen === "messaging" && (
-              <Messaging
-                myId={player.id}
-                myLabel={`Room ${player.room} (Bed ${player.bed})`}
-                myAvatar={player.avatar}
-                onlineUsers={onlineUsers}
-                messages={messages}
-                invites={invites}
-                onSendMessage={handleSendMessage}
-                onSendInvite={handleSendInvite}
-                onRespondInvite={handleRespondInvite}
-                onSelectGameSolo={handleSelectGameSolo}
-                onJoinGameMultiplayer={() => {}}
-                textScale={accessibility.textScale}
-              />
+                <Messaging
+                  myId={player.id}
+                  myLabel={`Room ${player.room} (Bed ${player.bed})`}
+                  myAvatar={player.avatar}
+                  onlineUsers={onlineUsers}
+                  messages={messages}
+                  invites={invites}
+                  joinableGames={joinableGames}
+                  onSendMessage={handleSendMessage}
+                  onSendInvite={handleSendInvite}
+                  onRespondInvite={handleRespondInvite}
+                  onSelectGameSolo={handleSelectGameSolo}
+                  onHostGameMultiplayer={handleHostGameMultiplayer}
+                  onJoinGameMultiplayer={handleJoinGameMultiplayer}
+                  textScale={accessibility.textScale}
+                />
             )}
 
             {activeScreen === "bingo" && (
@@ -676,6 +718,46 @@ export default function App() {
           </>
         )}
       </main>
+
+      {/* POPUP PROMPT FOR JOINING LOBBY GAME IN PROGRESS */}
+      {invitedJoinProgressGame && (
+        <div className="fixed inset-0 bg-slate-900/85 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white border-8 border-slate-950 p-6 md:p-8 rounded-3xl max-w-lg w-full flex flex-col gap-6 shadow-2xl text-center">
+            <span className="text-6xl animate-bounce">🍀</span>
+            <h3 className="text-2xl md:text-3xl font-black uppercase text-slate-900 leading-tight">
+              Join Game In-Progress?
+            </h3>
+            <p className="text-lg font-extrabold text-slate-700 leading-relaxed">
+              There is a multiplayer <span className="uppercase text-indigo-750 font-black">{invitedJoinProgressGame.gameType}</span> match currently in progress hosted by <span className="text-slate-950 font-black">{invitedJoinProgressGame.hostName}</span>.
+              <br /><br />
+              Would you like to join their lobby and play along?
+            </p>
+            <div className="flex gap-4">
+              <button
+                id="join-progress-yes"
+                onClick={async () => {
+                  const gId = invitedJoinProgressGame.id;
+                  setInvitedJoinProgressGame(null);
+                  await handleJoinGameMultiplayer(gId);
+                }}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white border-4 border-slate-950 py-3.5 rounded-2xl text-xl font-black uppercase cursor-pointer active:scale-95 transition"
+              >
+                Yes, Join ➔
+              </button>
+              <button
+                id="join-progress-no"
+                onClick={() => {
+                  setInvitedJoinProgressGame(null);
+                  speak("No problem. You can always join later from the lobby menu!");
+                }}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-900 border-4 border-slate-950 py-3.5 rounded-2xl text-xl font-black uppercase cursor-pointer active:scale-95 transition"
+              >
+                No, thanks
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FLOATING ACTION TRIGGER */}
       {player && player.isStaff && (

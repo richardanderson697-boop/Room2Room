@@ -9,6 +9,7 @@ interface YahtzeeProps {
   gameState: any;
   onUpdateGame: (newState: any) => void;
   textScale: "normal" | "large" | "extra-large";
+  activeGameSession?: any;
 }
 
 type ScoreCard = { [category: string]: number | null };
@@ -36,6 +37,7 @@ export default function Yahtzee({
   gameState,
   onUpdateGame,
   textScale,
+  activeGameSession,
 }: YahtzeeProps) {
   const [dice, setDice] = useState<number[]>([1, 1, 1, 1, 1]);
   const [held, setHeld] = useState<boolean[]>([false, false, false, false, false]);
@@ -44,6 +46,18 @@ export default function Yahtzee({
   const [opponentScoreCard, setOpponentScoreCard] = useState<ScoreCard>({});
   const [turn, setTurn] = useState<string>("");
   const [winner, setWinner] = useState<string | null>(null);
+
+  // Find which player's turn is next in Yahtzee
+  const getNextPlayerTurn = (): string => {
+    if (activeGameSession && activeGameSession.players.length > 1) {
+      const idx = activeGameSession.players.indexOf(playerId);
+      if (idx !== -1) {
+        const nextIdx = (idx + 1) % activeGameSession.players.length;
+        return activeGameSession.players[nextIdx];
+      }
+    }
+    return opponentId || "computer";
+  };
 
   const initGameLocal = () => {
     setDice([1, 1, 1, 1, 1]);
@@ -82,23 +96,30 @@ export default function Yahtzee({
 
   // Sync state if multiplayer
   useEffect(() => {
-    if (opponentId && gameState) {
+    if ((opponentId || activeGameSession) && gameState) {
       if (gameState.dice) setDice(gameState.dice);
       if (gameState.held) setHeld(gameState.held);
       if (gameState.rollCount !== undefined) setRollCount(gameState.rollCount);
       if (gameState.turn) setTurn(gameState.turn);
       if (gameState.winner) setWinner(gameState.winner);
-
+ 
       if (gameState.scores) {
         if (gameState.scores[playerId]) {
           setScoreCard(gameState.scores[playerId]);
         }
-        if (gameState.scores[opponentId]) {
+        
+        // Populate opponent dynamically of first active non-self player
+        if (activeGameSession && activeGameSession.players.length > 1) {
+          const otherId = activeGameSession.players.find((pid: string) => pid !== playerId);
+          if (otherId && gameState.scores[otherId]) {
+            setOpponentScoreCard(gameState.scores[otherId]);
+          }
+        } else if (opponentId && gameState.scores[opponentId]) {
           setOpponentScoreCard(gameState.scores[opponentId]);
         }
       }
     }
-  }, [gameState, opponentId]);
+  }, [gameState, opponentId, activeGameSession]);
 
   const speak = (phrase: string) => {
     speakPhrase(phrase, true);
@@ -108,6 +129,10 @@ export default function Yahtzee({
     if (winner) return;
     if (opponentId && turn !== playerId) {
       speak("Patience! It is your opponent's turn to roll.");
+      return;
+    }
+    if (activeGameSession && activeGameSession.players.length > 1 && turn !== playerId) {
+      speak("Patience! It is another player's turn to roll.");
       return;
     }
     if (rollCount >= 3) {
@@ -126,7 +151,8 @@ export default function Yahtzee({
     setRollCount(newRollCount);
     speak(`Rolling... got ${newDice.join(", ")}`);
 
-    if (opponentId) {
+    // If multiplayer
+    if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
       onUpdateGame({
         ...gameState,
         dice: newDice,
@@ -144,7 +170,8 @@ export default function Yahtzee({
     setHeld(updated);
     speak(updated[index] ? `Held die ${index + 1}` : `Released die ${index + 1}`);
 
-    if (opponentId) {
+    // If multiplayer
+    if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
       onUpdateGame({
         ...gameState,
         held: updated,
@@ -218,7 +245,7 @@ export default function Yahtzee({
 
   const claimCategory = (catId: string) => {
     if (winner) return;
-    if (opponentId && turn !== playerId) {
+    if ((opponentId || (activeGameSession && activeGameSession.players.length > 1)) && turn !== playerId) {
       speak("Wait for enemy turn.");
       return;
     }
@@ -248,23 +275,37 @@ export default function Yahtzee({
     // Turn handover/Completion check
     const isLocalFinished = Object.values(updatedCard).every((v) => v !== null);
 
-    if (opponentId) {
+    if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
       const allScores = {
         ...gameState.scores,
         [playerId]: updatedCard,
       };
 
-      const p2Card = gameState.scores[opponentId] || {};
-      const isP2Finished = Object.values(p2Card).every((v) => v !== null);
+      const nextTurn = getNextPlayerTurn();
+
+      // Check if everyone has completed all 13 scorecard slots
+      const activePlayersList = activeGameSession ? activeGameSession.players : [playerId, opponentId].filter(Boolean);
+      const isEveryoneFinished = activePlayersList.every((pid: string) => {
+        const card = allScores[pid] || {};
+        const vals = Object.values(card);
+        return vals.length >= 13 && vals.every((v) => v !== null && v !== undefined);
+      });
 
       let nextWinner: string | null = null;
-      if (isLocalFinished && isP2Finished) {
-        // Calculate Win
-        const p1Sum = sumScores(updatedCard);
-        const p2Sum = sumScores(p2Card);
-        nextWinner = p1Sum > p2Sum ? playerId : opponentId;
+      if (isEveryoneFinished) {
+        // Find player with maximum score
+        let maxScore = -1;
+        let bestPlayer = null;
+        activePlayersList.forEach((pid: string) => {
+          const sum = sumScores(allScores[pid] || {});
+          if (sum > maxScore) {
+            maxScore = sum;
+            bestPlayer = pid;
+          }
+        });
+        nextWinner = bestPlayer;
         setWinner(nextWinner);
-        speak(nextWinner === playerId ? "Match completed! You won Yahtzee!" : "Match finished! Your opponent scored higher.");
+        speak(nextWinner === playerId ? "Match completed! You won Yahtzee!" : "Match finished! Another player scored higher.");
       }
 
       onUpdateGame({
@@ -273,10 +314,12 @@ export default function Yahtzee({
         held: [false, false, false, false, false],
         rollCount: 0,
         scores: allScores,
-        turn: opponentId, // hand over turn
+        turn: nextTurn, // hand over turn
         winner: nextWinner,
         ended: !!nextWinner,
-        statusMessage: `Room ${playerId.split("-")[0]} scored. Now: Room ${opponentId.split("-")[0]} turn.`,
+        statusMessage: nextWinner 
+          ? `Lobby completed! Winner is Room ${nextWinner.split("-")[0]}`
+          : `Room ${playerId.split("-")[0]} scored. Now: Room ${nextTurn.split("-")[0]}'s turn.`,
       });
     } else {
       if (isLocalFinished) {
@@ -307,9 +350,24 @@ export default function Yahtzee({
             🎲 Senior Yahtzee Dice Match
           </h2>
           <p className="text-sm font-semibold opacity-85 mt-1">
-            {opponentId 
-              ? `Playing vs Room opponent ${opponentDetails?.label}` 
-              : "Solo Practice. Roll to complete scorecard categories."}
+            {activeGameSession?.players && activeGameSession.players.length > 1 ? (
+              <span className="flex flex-wrap gap-1.5 items-center mt-1">
+                <span className="text-xs uppercase font-extrabold tracking-wider bg-slate-200 text-slate-800 px-2 py-0.5 rounded">Yahtzee Group:</span>
+                {activeGameSession.players.map((pid: string) => {
+                  const pDet = activeGameSession.playerDetails[pid] || { label: `Room ${pid.split("-")[0]}`, avatar: "👤" };
+                  return (
+                    <span key={pid} className="inline-flex items-center gap-1 bg-white px-2 py-1 rounded-lg shadow-sm border border-slate-300 text-xs">
+                      <span>{pDet.avatar}</span>
+                      <span className="font-bold text-slate-900">{pDet.label} {pid === playerId ? "(You)" : ""}</span>
+                    </span>
+                  );
+                })}
+              </span>
+            ) : opponentId ? (
+              `Playing vs Room opponent ${opponentDetails?.label}` 
+            ) : (
+              "Solo Practice. Roll to complete scorecard categories."
+            )}
           </p>
         </div>
 
@@ -324,30 +382,63 @@ export default function Yahtzee({
       </div>
 
       {/* DIE ROLL COUNTERS AND HOVER PANEL */}
-      <div className="grid grid-cols-1 md:grid-cols-2 bg-zinc-100 border-4 border-zinc-900 p-4 rounded-xl gap-4 items-center">
-        <div className="flex gap-4 font-black">
-          <span className="text-lg">ROLLS IN HAND: <span className="text-rose-800">{rollCount}/3</span></span>
-          <span className="text-lg">MY SUM: <span className="text-emerald-800">{sumScores(scoreCard)}</span></span>
-          {opponentId && (
-            <span className="text-lg">OPPONENT: {sumScores(opponentScoreCard)}</span>
-          )}
+      <div className="grid grid-cols-1 bg-zinc-100 border-4 border-zinc-900 p-4 rounded-xl gap-4">
+        
+        {/* Unified Score Leaderboard */}
+        <div className="border-b border-zinc-300 pb-3">
+          <span className="text-xs font-black uppercase text-slate-500 block mb-2">🏆 Room Score Leaderboard:</span>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <div className="bg-white p-2 rounded-lg border-2 border-slate-350 text-center">
+              <span className="text-[10px] font-black block text-emerald-850">👋 Me (Total)</span>
+              <span className="text-xl font-black text-emerald-850">{sumScores(scoreCard)} pts</span>
+            </div>
+            {activeGameSession?.players && activeGameSession.players.length > 1 ? (
+              activeGameSession.players.filter((pid: string) => pid !== playerId).map((pid: string) => {
+                const pDet = activeGameSession.playerDetails[pid] || { label: `Room ${pid}`, avatar: "👤" };
+                const pScores = gameState?.scores?.[pid] || {};
+                const isHisTurn = turn === pid;
+                return (
+                  <div key={pid} className={`p-2 rounded-lg border-2 text-center transition-all ${isHisTurn ? "border-amber-500 bg-amber-50" : "border-slate-350 bg-white"}`}>
+                    <span className="text-[10px] font-bold block text-slate-700 leading-none truncate flex items-center justify-center gap-1">
+                      <span>{pDet.avatar}</span>
+                      <span>{pDet.label.split(" ")[1] || pDet.label}</span>
+                      {isHisTurn && <span className="text-[8px] bg-amber-500 text-white font-black px-1 rounded animate-pulse">TURN</span>}
+                    </span>
+                    <span className="text-xl font-black text-rose-850">{sumScores(pScores)} pts</span>
+                  </div>
+                );
+              })
+            ) : opponentId ? (
+              <div className="bg-white p-2 rounded-lg border-2 border-slate-350 text-center">
+                <span className="text-[10px] font-black block text-rose-850">🤖 Opponent</span>
+                <span className="text-xl font-black text-rose-800">{sumScores(opponentScoreCard)} pts</span>
+              </div>
+            ) : null}
+          </div>
         </div>
 
-        <div className="flex justify-end gap-2">
-          {opponentId && turn !== playerId ? (
-            <span className="bg-slate-300 border-2 border-slate-400 font-extrabold px-3 py-1 rounded-lg text-sm">
-              Wait for Opponent roll
-            </span>
-          ) : (
-            <button
-              id="yahtzee-roll-btn"
-              onClick={rollDice}
-              disabled={rollCount >= 3 || !!winner}
-              className="bg-emerald-500 text-white border-3 border-emerald-950 font-black px-6 py-2 rounded-xl text-base cursor-pointer hover:bg-emerald-600 active:scale-95 disabled:opacity-50"
-            >
-              🎲 ROLL DICE!
-            </button>
-          )}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex gap-4 font-black">
+            <span className="text-lg uppercase">Rolls: <span className="text-rose-800">{rollCount}/3</span></span>
+            <span className="text-lg uppercase">Turn owner: <span className="text-blue-800">{turn === playerId ? "YOURS" : "WAITING"}</span></span>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            {(opponentId || (activeGameSession && activeGameSession.players.length > 1)) && turn !== playerId ? (
+              <span className="bg-slate-300 border-2 border-slate-400 font-extrabold px-3 py-1.5 rounded-lg text-sm animate-pulse">
+                ⏳ Waiting for client turn play...
+              </span>
+            ) : (
+              <button
+                id="yahtzee-roll-btn"
+                onClick={rollDice}
+                disabled={rollCount >= 3 || !!winner}
+                className="bg-emerald-500 text-white border-3 border-emerald-950 font-black px-6 py-2.5 rounded-xl text-base cursor-pointer hover:bg-emerald-600 active:scale-95 disabled:opacity-50 transition"
+              >
+                🎲 ROLL DICE!
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

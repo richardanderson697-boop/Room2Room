@@ -244,12 +244,27 @@ app.post("/api/heartbeat", (req, res) => {
     reportsList = announcementReports;
   }
 
+  // Fetch games of type bingo, uno, yahtzee, or checkers that are NOT finished and does NOT include sender
+  const joinableGamesList = Object.values(games)
+    .filter((g) => !g.players.includes(playerId) && !g.state?.ended)
+    .map((g) => {
+      const hostId = g.players[0] || "";
+      return {
+        id: g.id,
+        gameType: g.gameType,
+        hostName: g.playerDetails[hostId]?.label || `Room ${hostId.split("-")[0]}`,
+        hostAvatar: g.playerDetails[hostId]?.avatar || "👤",
+        playerCount: g.players.length,
+      };
+    });
+
   res.json({
     success: true,
     players: playersList,
     messages: playerMsgs,
     invites: playerInvites,
     activeGames,
+    joinableGames: joinableGamesList,
     announcements: playerAnnouncements,
     staffLogs,
     reportsList,
@@ -614,6 +629,191 @@ app.post("/api/game/leave", (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+// 8. Create/Host Public Group Game Lobby
+app.post("/api/game/create", (req, res) => {
+  const { playerId, gameType } = req.body;
+  if (!playerId || !gameType) {
+    res.status(400).json({ error: "Missing playerId or gameType" });
+    return;
+  }
+
+  const p = activePlayers[playerId];
+  if (!p) {
+    res.status(404).json({ error: "Player not online" });
+    return;
+  }
+
+  const gameId = `game-${gameType}-${Date.now()}`;
+
+  // Initialize game session state
+  let initialGameState: any = {
+    turn: playerId,
+    statusMessage: `Group game started by Room ${p.room}!`,
+    ended: false,
+  };
+
+  if (gameType === "bingo") {
+    initialGameState = {
+      calledNumbers: [],
+      started: true,
+      callerActive: true,
+      winner: null,
+      winnerName: null,
+      statusMessage: "Multiplayer Bingo starting! Bring your luck!",
+    };
+  } else if (gameType === "checkers") {
+    const initialBoard = [
+      ["e", "b", "e", "b", "e", "b", "e", "b"],
+      ["b", "e", "b", "e", "b", "e", "b", "e"],
+      ["e", "b", "e", "b", "e", "b", "e", "b"],
+      ["e", "e", "e", "e", "e", "e", "e", "e"],
+      ["e", "e", "e", "e", "e", "e", "e", "e"],
+      ["r", "e", "r", "e", "r", "e", "r", "e"],
+      ["e", "r", "e", "r", "e", "r", "e", "r"],
+      ["r", "e", "r", "e", "r", "e", "r", "e"],
+    ];
+    initialGameState = {
+      board: initialBoard,
+      turn: playerId,
+      colorMap: {
+        [playerId]: "red"
+      },
+      ended: false,
+      winner: null,
+      statusMessage: "Checkers match setup in progress!",
+    };
+  } else if (gameType === "uno") {
+    initialGameState = {
+      deckCount: 40,
+      discardPile: [{ color: "red", value: "5" }],
+      playerHands: {
+        [playerId]: [
+          { color: "red", value: "3" },
+          { color: "blue", value: "Skip" },
+          { color: "yellow", value: "7" },
+          { color: "green", value: "Draw 2" },
+          { color: "wild", value: "Wild" },
+        ],
+      },
+      turn: playerId,
+      ended: false,
+      winner: null,
+      statusMessage: "Uno lobby started! Play card matching color/number.",
+    };
+  } else if (gameType === "yahtzee") {
+    const blankCard: any = {};
+    const categoriesId = ["ones", "twos", "threes", "fours", "fives", "sixes", "threeOfAKind", "fourOfAKind", "fullHouse", "smallStraight", "largeStraight", "yahtzee", "chance"];
+    categoriesId.forEach((catId) => {
+      blankCard[catId] = null;
+    });
+
+    initialGameState = {
+      dice: [1, 1, 1, 1, 1],
+      held: [false, false, false, false, false],
+      rollCount: 0,
+      scores: {
+        [playerId]: blankCard,
+      },
+      turn: playerId,
+      ended: false,
+      winner: null,
+      statusMessage: "Yahtzee game started! Take your turn to roll dice.",
+    };
+  }
+
+  games[gameId] = {
+    id: gameId,
+    gameType,
+    players: [playerId],
+    playerDetails: {
+      [playerId]: {
+        label: `Room ${p.room} (Bed ${p.bed})`,
+        avatar: p.avatar,
+      },
+    },
+    state: initialGameState,
+    lastUpdate: Date.now(),
+  };
+
+  console.log(`Hosted group lobby created: ${gameType} (${gameId}) by ${playerId}`);
+  res.json({ success: true, gameId });
+});
+
+// 9. Join Group Game Lobby In-Progress
+app.post("/api/game/join", (req, res) => {
+  const { gameId, playerId } = req.body;
+  if (!gameId || !playerId) {
+    res.status(400).json({ error: "Missing gameId or playerId" });
+    return;
+  }
+
+  const game = games[gameId];
+  if (!game) {
+    res.status(404).json({ error: "Game session not found" });
+    return;
+  }
+
+  const p = activePlayers[playerId];
+  if (!p) {
+    res.status(404).json({ error: "Player not online" });
+    return;
+  }
+
+  // Already joined, return success
+  if (game.players.includes(playerId)) {
+    res.json({ success: true, gameId });
+    return;
+  }
+
+  // Register player in session
+  game.players.push(playerId);
+  game.playerDetails[playerId] = {
+    label: `Room ${p.room} (Bed ${p.bed})`,
+    avatar: p.avatar,
+  };
+
+  // Adjust game stats for joining player
+  if (game.gameType === "uno") {
+    if (!game.state.playerHands) {
+      game.state.playerHands = {};
+    }
+    // Give player a starter hand of 5 cards
+    game.state.playerHands[playerId] = [
+      { color: "green", value: "4" },
+      { color: "blue", value: "7" },
+      { color: "red", value: "Skip" },
+      { color: "yellow", value: "8" },
+      { color: "wild", value: "Wild" },
+    ];
+    game.state.statusMessage = `Room ${p.room} has joined the Uno round!`;
+  } else if (game.gameType === "yahtzee") {
+    if (!game.state.scores) {
+      game.state.scores = {};
+    }
+    const blankCard: any = {};
+    const categoriesId = ["ones", "twos", "threes", "fours", "fives", "sixes", "threeOfAKind", "fourOfAKind", "fullHouse", "smallStraight", "largeStraight", "yahtzee", "chance"];
+    categoriesId.forEach((catId) => {
+      blankCard[catId] = null;
+    });
+    game.state.scores[playerId] = blankCard;
+    game.state.statusMessage = `Room ${p.room} joined! Take turns rolling the dice!`;
+  } else if (game.gameType === "checkers") {
+    const isRedOccupied = Object.values(game.state.colorMap || {}).includes("red");
+    const chosenColor = isRedOccupied ? "black" : "red";
+    if (!game.state.colorMap) {
+      game.state.colorMap = {};
+    }
+    game.state.colorMap[playerId] = chosenColor;
+    game.state.statusMessage = `Room ${p.room} joined Checkers as ${chosenColor}!`;
+  } else if (game.gameType === "bingo") {
+    game.state.statusMessage = `Room ${p.room} joined our Bingo hall!`;
+  }
+
+  game.lastUpdate = Date.now();
+  console.log(`Player ${p.room} joined game ${gameId}`);
+  res.json({ success: true, gameId });
 });
 
 // VITE MIDDLEWARE SETUP

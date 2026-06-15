@@ -9,6 +9,7 @@ interface BingoProps {
   gameState: any;
   onUpdateGame: (newState: any) => void;
   textScale: "normal" | "large" | "extra-large";
+  activeGameSession?: any;
 }
 
 export default function Bingo({
@@ -18,6 +19,7 @@ export default function Bingo({
   gameState,
   onUpdateGame,
   textScale,
+  activeGameSession,
 }: BingoProps) {
   const [board, setBoard] = useState<number[][]>([]);
   const [marked, setMarked] = useState<boolean[][]>(
@@ -229,7 +231,7 @@ export default function Bingo({
 
   // Multi-player Call Number (Both can sync it or HOST calls)
   const handleMultiplayerCall = () => {
-    if (!opponentId || isBingoClaimed || (gameState && gameState.winner)) return;
+    if (!(opponentId || activeGameSession) || isBingoClaimed || (gameState && gameState.winner)) return;
     const pool: number[] = [];
     for (let i = 1; i <= 75; i++) {
       if (!calledNumbers.includes(i)) {
@@ -351,11 +353,26 @@ export default function Bingo({
           <h2 className={`${sizeClass} font-black tracking-tight flex items-center gap-2`}>
             🍀 Senior Bingo Lobbies
           </h2>
-          <p className="text-sm font-semibold opacity-85 mt-1">
-            {opponentId 
-              ? `Playing against: Room ${opponentId.split("-")[0]} Bed ${opponentId.split("-")[1]}` 
-              : "Solo Mode with automated friendly numbers caller."}
-          </p>
+          <div className="text-sm font-semibold opacity-85 mt-1">
+            {activeGameSession?.players && activeGameSession.players.length > 1 ? (
+              <div className="flex flex-wrap gap-1.5 items-center mt-1">
+                <span className="text-xs uppercase font-extrabold tracking-wider bg-slate-200 text-slate-800 px-2 py-0.5 rounded">Bingo Group:</span>
+                {activeGameSession.players.map((pid: string) => {
+                  const pDet = activeGameSession.playerDetails[pid] || { label: `Room ${pid.split("-")[0]}`, avatar: "👤" };
+                  return (
+                    <span key={pid} className="inline-flex items-center gap-1 bg-white px-2 py-1 rounded-lg shadow-sm border border-slate-300 text-xs">
+                      <span>{pDet.avatar}</span>
+                      <span className="font-bold text-slate-900">{pDet.label} {pid === playerId ? "(You)" : ""}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : opponentId ? (
+              `Playing against: Room ${opponentId.split("-")[0]} Bed ${opponentId.split("-")[1]}`
+            ) : (
+              "Solo Mode with automated friendly numbers caller."
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">

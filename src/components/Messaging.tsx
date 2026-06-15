@@ -10,10 +10,12 @@ interface MessagingProps {
   onlineUsers: OnlineUser[];
   messages: ChatMessage[];
   invites: GameInvite[];
+  joinableGames?: any[];
   onSendMessage: (receiverId: string, text: string) => void;
   onSendInvite: (receiverId: string, gameType: "bingo" | "checkers" | "solitaire" | "uno" | "yahtzee") => void;
   onRespondInvite: (inviteId: string, status: "accepted" | "declined") => void;
   onSelectGameSolo: (gameType: "bingo" | "checkers" | "solitaire" | "uno" | "yahtzee") => void;
+  onHostGameMultiplayer?: (gameType: "bingo" | "checkers" | "uno" | "yahtzee") => void;
   onJoinGameMultiplayer: (gameId: string) => void;
   textScale: "normal" | "large" | "extra-large";
 }
@@ -25,10 +27,12 @@ export default function Messaging({
   onlineUsers,
   messages,
   invites,
+  joinableGames = [],
   onSendMessage,
   onSendInvite,
   onRespondInvite,
   onSelectGameSolo,
+  onHostGameMultiplayer,
   onJoinGameMultiplayer,
   textScale,
 }: MessagingProps) {
@@ -202,6 +206,75 @@ export default function Messaging({
                 No other facility beds are online right now. Practice solo games below!
               </p>
             )}
+          </div>
+        </div>
+
+        {/* ACTIVE MULTIPLAYER ROOMS & SHARING LOBBIES */}
+        <div className="bg-emerald-50 rounded-2xl border-4 border-emerald-900 p-4 shadow-md flex flex-col gap-3">
+          <h2 className="text-base font-black uppercase text-emerald-950 border-b-2 border-emerald-800 pb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 font-bold">📡 Lobbies In-Progress</span>
+            <span className="bg-emerald-900 text-white text-xs font-black px-2 py-0.5 rounded-full">
+              {joinableGames.length}
+            </span>
+          </h2>
+
+          <div className="flex flex-col gap-2 max-h-52 overflow-y-auto pr-1">
+            {joinableGames.map((g) => (
+              <div
+                key={g.id}
+                className="bg-white border-2 border-emerald-900 p-2.5 rounded-xl flex items-center justify-between gap-1 shadow-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xl p-1 bg-emerald-50 rounded-lg">{g.hostAvatar}</span>
+                  <div>
+                    <span className="font-extrabold block text-xs text-slate-900">
+                      {g.hostName}'s {g.gameType.toUpperCase()}
+                    </span>
+                    <span className="text-[10px] text-emerald-800 font-bold block">
+                      👤 {g.playerCount} active
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  id={`join-pub-game-${g.id}`}
+                  onClick={() => {
+                    onJoinGameMultiplayer(g.id);
+                  }}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white border-2 border-slate-900 text-[10px] font-black px-2 py-1 rounded-lg uppercase tracking-tight transition cursor-pointer active:scale-95"
+                >
+                  Join ➔
+                </button>
+              </div>
+            ))}
+
+            {joinableGames.length === 0 && (
+              <p className="text-[11px] font-bold text-center text-slate-500 py-2 leading-relaxed">
+                No active group lobbies. Create one below of Bingo, Uno, or Yahtzee, and others can hop right in!
+              </p>
+            )}
+          </div>
+
+          <div className="border-t border-emerald-250 pt-2 flex flex-col gap-1.5">
+            <span className="text-[10px] font-black uppercase text-emerald-800">
+              Host a public game play:
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(["bingo", "uno", "yahtzee", "checkers"] as const).map((gType) => (
+                <button
+                  key={gType}
+                  id={`host-lobby-${gType}`}
+                  onClick={() => {
+                    if (onHostGameMultiplayer) {
+                      onHostGameMultiplayer(gType);
+                    }
+                  }}
+                  className="p-1.5 bg-emerald-700 text-white hover:bg-emerald-800 border-2 border-slate-900 font-black rounded-lg text-[9px] uppercase tracking-wide cursor-pointer transition active:scale-95"
+                >
+                  Host {gType}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

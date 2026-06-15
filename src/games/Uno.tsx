@@ -14,6 +14,7 @@ interface UnoProps {
   gameState: any;
   onUpdateGame: (newState: any) => void;
   textScale: "normal" | "large" | "extra-large";
+  activeGameSession?: any;
 }
 
 export default function Uno({
@@ -23,6 +24,7 @@ export default function Uno({
   gameState,
   onUpdateGame,
   textScale,
+  activeGameSession,
 }: UnoProps) {
   const [playerHand, setPlayerHand] = useState<UnoCard[]>([]);
   const [opponentHandSize, setOpponentHandSize] = useState<number>(5);
@@ -32,6 +34,18 @@ export default function Uno({
   const [currentSelectedWildColor, setCurrentSelectedWildColor] = useState<"red" | "blue" | "green" | "yellow" | null>(null);
   const [winner, setWinner] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
+
+  // Find which player's turn is next
+  const getNextPlayerTurn = (): string => {
+    if (activeGameSession && activeGameSession.players.length > 1) {
+      const idx = activeGameSession.players.indexOf(playerId);
+      if (idx !== -1) {
+        const nextIdx = (idx + 1) % activeGameSession.players.length;
+        return activeGameSession.players[nextIdx];
+      }
+    }
+    return opponentId || "computer";
+  };
 
   const cardColorsList: ("red" | "blue" | "green" | "yellow")[] = ["red", "blue", "green", "yellow"];
   const values = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "Skip", "Reverse", "Draw 2"];
@@ -105,7 +119,7 @@ export default function Uno({
 
   // Sync state if multiplayer
   useEffect(() => {
-    if (opponentId && gameState) {
+    if ((opponentId || activeGameSession) && gameState) {
       if (gameState.discardPile) setDiscardPile(gameState.discardPile);
       if (gameState.winner) setWinner(gameState.winner);
       if (gameState.turn) setTurn(gameState.turn);
@@ -115,13 +129,20 @@ export default function Uno({
         if (gameState.playerHands[playerId]) {
           setPlayerHand(gameState.playerHands[playerId]);
         }
-        if (gameState.playerHands[opponentId]) {
+        
+        // Find opponent hand size dynamically from anyone who's not me!
+        if (activeGameSession && activeGameSession.players.length > 1) {
+          const otherId = activeGameSession.players.find((pid: string) => pid !== playerId);
+          if (otherId && gameState.playerHands[otherId]) {
+            setOpponentHandSize(gameState.playerHands[otherId].length);
+          }
+        } else if (opponentId && gameState.playerHands[opponentId]) {
           setOpponentHandSize(gameState.playerHands[opponentId].length);
         }
       }
       if (gameState.statusMessage) setStatusMessage(gameState.statusMessage);
     }
-  }, [gameState, opponentId]);
+  }, [gameState, opponentId, activeGameSession]);
 
   const speak = (phrase: string) => {
     speakPhrase(phrase, true);
@@ -146,7 +167,7 @@ export default function Uno({
       const updatedHand = playerHand.filter((_, idx) => idx !== cardIdx);
       const newDiscard = [...discardPile, cardToPlay];
 
-      let nextTurn = opponentId || "computer";
+      let nextTurn = getNextPlayerTurn();
       let wildMenuNeeded = false;
       let tempWildColor: any = null;
 
@@ -156,8 +177,9 @@ export default function Uno({
         setStatusMessage(`You played ${cardToPlay.value}! Take another turn!`);
         speak(`You played a ${cardToPlay.value}! Move again!`);
       } else if (cardToPlay.value === "Draw 2") {
-        setStatusMessage("Played Draw 2! Opponent draws 2 cards.");
-        speak("Played Draw 2! Opponent receives two cards.");
+        const victimId = getNextPlayerTurn();
+        setStatusMessage(`Played Draw 2 on ${victimId.split("-")[0]}! Opponent draws 2 cards.`);
+        speak(`Played Draw 2! ${victimId.split("-")[0]} receives two cards.`);
         // Give 2 cards to opponent
         if (!opponentId) {
           setOpponentHandSize((prev) => prev + 2);
@@ -167,7 +189,7 @@ export default function Uno({
       } else if (cardToPlay.color === "wild") {
         wildMenuNeeded = true;
         // set default red if quick solo auto
-        if (!opponentId) {
+        if (!opponentId && !activeGameSession) {
           tempWildColor = "red";
           setCurrentSelectedWildColor("red");
         }
@@ -184,7 +206,7 @@ export default function Uno({
       setPlayerHand(updatedHand);
       setDiscardPile(newDiscard);
 
-      if (opponentId) {
+      if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
         // MULTIPLAYER SYNC
         const finalHands = {
           ...gameState.playerHands,
@@ -192,11 +214,12 @@ export default function Uno({
         };
 
         if (cardToPlay.value === "Draw 2") {
-          const oppHandCopy = [...(gameState.playerHands[opponentId] || [])];
+          const victimId = getNextPlayerTurn();
+          const oppHandCopy = [...(gameState.playerHands[victimId] || [])];
           // Simple draw simulation
           oppHandCopy.push({ color: "blue", value: "3" });
           oppHandCopy.push({ color: "red", value: "7" });
-          finalHands[opponentId] = oppHandCopy;
+          finalHands[victimId] = oppHandCopy;
         }
 
         onUpdateGame({
@@ -208,7 +231,7 @@ export default function Uno({
           activeWildColor: tempWildColor,
           statusMessage: nextWinner 
             ? `Room ${playerId.split("-")[0]} wins! UNO!` 
-            : `Room ${playerId.split("-")[0]} played a card. Now: ${nextTurn.split("-")[0]} turn.`,
+            : `Room ${playerId.split("-")[0]} played a card. Now: ${nextTurn.split("-")[0]}'s turn.`,
           ended: !!nextWinner,
         });
 
@@ -256,14 +279,16 @@ export default function Uno({
     speak(`You drew a ${newCard.color} ${newCard.value}`);
 
     // If multiplayer
-    if (opponentId) {
+    if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
+      const nextTurn = getNextPlayerTurn();
       onUpdateGame({
         ...gameState,
         playerHands: {
           ...gameState.playerHands,
           [playerId]: updatedHand,
         },
-        statusMessage: `Room ${playerId.split("-")[0]} drew a card.`,
+        turn: nextTurn,
+        statusMessage: `Room ${playerId.split("-")[0]} drew. Now: ${nextTurn.split("-")[0]}'s turn.`,
       });
     } else {
       // Swipe turn to AI
@@ -326,12 +351,13 @@ export default function Uno({
     setStatusMessage(`Wild Color chosen: ${color.toUpperCase()}`);
     speak(`Wild color shifted to ${color}`);
 
-    if (opponentId) {
+    if (opponentId || (activeGameSession && activeGameSession.players.length > 1)) {
+      const nextTurn = getNextPlayerTurn();
       onUpdateGame({
         ...gameState,
         activeWildColor: color,
-        turn: opponentId,
-        statusMessage: `Room ${playerId.split("-")[0]} chose Wild Color: ${color}`,
+        turn: nextTurn,
+        statusMessage: `Room ${playerId.split("-")[0]} chose Wild Color: ${color}. Now: ${nextTurn.split("-")[0]}'s turn.`,
       });
     } else {
       setTurn("computer");
@@ -356,9 +382,24 @@ export default function Uno({
             🌈 Senior Uno Color Play
           </h2>
           <p className="text-sm font-semibold opacity-85 mt-1">
-            {opponentId 
-              ? `Playing vs Room opponent ${opponentDetails?.label}` 
-              : "Solo Practice vs Automated computer AI player."}
+            {activeGameSession?.players && activeGameSession.players.length > 1 ? (
+              <span className="flex flex-wrap gap-1.5 items-center mt-1">
+                <span className="text-xs uppercase font-extrabold tracking-wider bg-slate-200 text-slate-800 px-2 py-0.5 rounded">Group Uno:</span>
+                {activeGameSession.players.map((pid: string) => {
+                  const pDet = activeGameSession.playerDetails[pid] || { label: `Room ${pid.split("-")[0]}`, avatar: "👤" };
+                  return (
+                    <span key={pid} className="inline-flex items-center gap-1 bg-white px-2 py-1 rounded-lg shadow-sm border border-slate-300 text-xs">
+                      <span>{pDet.avatar}</span>
+                      <span className="font-bold text-slate-900">{pDet.label} {pid === playerId ? "(You)" : ""}</span>
+                    </span>
+                  );
+                })}
+              </span>
+            ) : opponentId ? (
+              `Playing vs Room opponent ${opponentDetails?.label}` 
+            ) : (
+              "Solo Practice vs Automated computer AI player."
+            )}
           </p>
         </div>
 
@@ -381,14 +422,35 @@ export default function Uno({
       </div>
 
       {/* COMPANION SCORE & TUNING */}
-      <div className="grid grid-cols-2 gap-4 bg-zinc-100 border-4 border-zinc-900 p-3 rounded-xl text-center">
-        <div>
-          <span className="text-xs font-bold uppercase block text-slate-500">OPPONENT CARDS</span>
-          <span className="text-2xl font-black text-rose-800">{opponentHandSize} Cards Hand</span>
-        </div>
-        <div>
-          <span className="text-xs font-bold uppercase block text-slate-500">YOUR HAND</span>
-          <span className="text-2xl font-black text-emerald-800">{playerHand.length} Cards</span>
+      <div className="bg-zinc-100 border-4 border-zinc-900 p-3 rounded-xl shadow-inner">
+        <span className="text-xs font-black uppercase text-center block text-slate-500 mb-2">🎈 Current Hand Sizes:</span>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-center">
+          <div className="bg-white p-2.5 rounded-lg border-2 border-slate-300">
+            <span className="text-[10px] font-black block text-emerald-850 uppercase leading-none">👋 YOUR HAND (Me)</span>
+            <span className="text-xl font-black text-emerald-800 tracking-tight">{playerHand.length} Cards</span>
+          </div>
+          {activeGameSession?.players && activeGameSession.players.length > 1 ? (
+            activeGameSession.players.filter((pid: string) => pid !== playerId).map((pid: string) => {
+              const pDet = activeGameSession.playerDetails[pid] || { label: `Room ${pid}`, avatar: "👤" };
+              const handSize = gameState?.playerHands?.[pid]?.length ?? 5;
+              const isHisTurn = turn === pid;
+              return (
+                <div key={pid} className={`p-2 rounded-lg border-2 transition-all ${isHisTurn ? "border-amber-500 bg-amber-50" : "border-slate-350 bg-white"}`}>
+                  <span className="text-[11px] font-black block text-slate-700 leading-none truncate flex items-center justify-center gap-1">
+                    <span>{pDet.avatar}</span>
+                    <span>{pDet.label.split(" ")[1] || pDet.label}</span>
+                    {isHisTurn && <span className="text-[8px] bg-amber-500 text-white font-black px-1 rounded animate-pulse">TURN</span>}
+                  </span>
+                  <span className="text-xl font-black text-rose-800 tracking-tight">{handSize} Cards</span>
+                </div>
+              );
+            })
+          ) : (
+            <div className="bg-white p-2 rounded-lg border-2 border-slate-300">
+              <span className="text-[10px] font-black block text-rose-850 uppercase leading-none">🤖 OPPONENT (AI)</span>
+              <span className="text-xl font-black text-rose-800 tracking-tight">{opponentHandSize} Cards Hand</span>
+            </div>
+          )}
         </div>
       </div>
 
