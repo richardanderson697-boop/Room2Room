@@ -60,8 +60,17 @@ export default function Lobby({ onRegister, textScale }: LobbyProps) {
 
   const handleResetPin = async () => {
     try {
-      const res = await fetch("/api/pin-reset", { method: "POST" });
+      const res = await fetch("/api/pin-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
       const data = await res.json();
+      if (res.status === 401) {
+        setErrorLabel("Current PIN required to reset — enter the current PIN first.");
+        speak("Current PIN required to reset. Enter the current PIN first.");
+        return;
+      }
       if (data && data.success) {
         setFacilityPinSet(false);
         setPin("");

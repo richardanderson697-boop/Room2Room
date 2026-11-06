@@ -115,8 +115,16 @@ app.get("/api/pin-status", (req, res) => {
   res.json({ facilityPinSet: !!facilityPin });
 });
 
-// Reset PIN
+// Reset PIN — requires the current PIN. No admin role exists in this app,
+// so the current PIN is the only credential that can authorise a reset.
 app.post("/api/pin-reset", (req, res) => {
+  const { pin } = req.body ?? {};
+  if (facilityPin) {
+    if (!pin || String(pin).trim() !== facilityPin) {
+      res.status(401).json({ error: "Current Facility PIN required to reset" });
+      return;
+    }
+  }
   facilityPin = null;
   console.log("Facility PIN reset to null by client.");
   res.json({ success: true, facilityPinSet: false });
